@@ -1,67 +1,45 @@
 import json
 import os
-from enum import Enum
-from collections import deque
-from typing import List, Optional, Dict, Any, Tuple
-from copy import deepcopy
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any
+from collections import defaultdict
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg') # Для работы без GUI
+import numpy as np
 
-# ==================== Модель данных (Model) ====================
+# ==================== Модели данных ====================
 
-class Priority(Enum):
-    LOW = "Low"
-    MEDIUM = "Medium"
-    HIGH = "High"
+class Category:
+    """Категории расходов"""
+    FOOD = "Еда"
+    TRANSPORT = "Транспорт"
+    ENTERTAINMENT = "Развлечения"
+    SHOPPING = "Покупки"
+    UTILITIES = "Коммунальные услуги"
+    HEALTH = "Здоровье"
+    EDUCATION = "Образование"
+    OTHER = "Другое"
     
     @classmethod
-    def from_string(cls, value: str) -> 'Priority':
-        if not value:
-            return cls.MEDIUM
-        for priority in cls:
-            if priority.value.lower() == value.lower():
-                return priority
-        raise ValueError(f"Некорректный приоритет: {value}")
+    def get_all(cls) -> List[str]:
+        return [cls.FOOD, cls.TRANSPORT, cls.ENTERTAINMENT, 
+                cls.SHOPPING, cls.UTILITIES, cls.HEALTH, 
+                cls.EDUCATION, cls.OTHER]
     
     @classmethod
-    def get_all_values(cls) -> List[str]:
-        return [p.value for p in cls]
-    
-    @classmethod
-    def is_valid(cls, value: str) -> bool:
-        return value.lower() in [p.value.lower() for p in cls]
+    def is_valid(cls, category: str) -> bool:
+        return category in cls.get_all()
 
 
-class Status(Enum):
-    TODO = "To Do"
-    IN_PROGRESS = "In Progress"
-    DONE = "Done"
-    
-    @classmethod
-    def from_string(cls, value: str) -> 'Status':
-        if not value:
-            return cls.TODO
-        for status in cls:
-            if status.value.lower() == value.lower():
-                return status
-        raise ValueError(f"Некорректный статус: {value}")
-    
-    @classmethod
-    def get_all_values(cls) -> List[str]:
-        return [s.value for s in cls]
-    
-    @classmethod
-    def is_valid(cls, value: str) -> bool:
-        return value.lower() in [s.value.lower() for s in cls]
-
-
-class Task:
-    """Класс задачи с использованием инкапсуляции"""
-    def __init__(self, task_id: int, title: str, description: str, 
-                 priority: Priority, status: Status):
-        self._id = task_id
-        self._title = title
+class Expense:
+    """Базовый класс расхода (инкапсуляция)"""
+    def __init__(self, expense_id: int, amount: float, category: str, date: str, description: str = ""):
+        self._id = expense_id
+        self._amount = amount
+        self._category = category
+        self._date = date
         self._description = description
-        self._priority = priority
-        self._status = status
     
     # Геттеры
     @property
@@ -69,14 +47,36 @@ class Task:
         return self._id
     
     @property
-    def title(self) -> str:
-        return self._title
+    def amount(self) -> float:
+        return self._amount
     
-    @title.setter
-    def title(self, value: str):
-        if not value or not value.strip():
-            raise ValueError("Название не может быть пустым")
-        self._title = value.strip()
+    @amount.setter
+    def amount(self, value: float):
+        if value <= 0:
+            raise ValueError("Сумма расхода должна быть положительной")
+        self._amount = value
+    
+    @property
+    def category(self) -> str:
+        return self._category
+    
+    @category.setter
+    def category(self, value: str):
+        if not Category.is_valid(value):
+            raise ValueError(f"Некорректная категория: {value}")
+        self._category = value
+    
+    @property
+    def date(self) -> str:
+        return self._date
+    
+    @date.setter
+    def date(self, value: str):
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+            self._date = value
+        except ValueError:
+            raise ValueError("Неверный формат даты. Используйте ГГГГ-ММ-ДД")
     
     @property
     def description(self) -> str:
@@ -84,290 +84,197 @@ class Task:
     
     @description.setter
     def description(self, value: str):
-        self._description = value.strip() if value else ""
-    
-    @property
-    def priority(self) -> Priority:
-        return self._priority
-    
-    @priority.setter
-    def priority(self, value: Priority):
-        if not isinstance(value, Priority):
-            raise ValueError("Некорректный тип приоритета")
-        self._priority = value
-    
-    @property
-    def status(self) -> Status:
-        return self._status
-    
-    @status.setter
-    def status(self, value: Status):
-        if not isinstance(value, Status):
-            raise ValueError("Некорректный тип статуса")
-        self._status = value
+        self._description = value
     
     def to_dict(self) -> Dict[str, Any]:
-        """Сериализация в словарь для JSON"""
+        """Сериализация в JSON"""
         return {
             "id": self._id,
-            "title": self._title,
-            "description": self._description,
-            "priority": self._priority.value,
-            "status": self._status.value
+            "amount": self._amount,
+            "category": self._category,
+            "date": self._date,
+            "description": self._description
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Task':
-        """Десериализация из словаря"""
+    def from_dict(cls, data: Dict[str, Any]) -> 'Expense':
+        """Десериализация из JSON"""
         return cls(
-            task_id=data["id"],
-            title=data["title"],
-            description=data["description"],
-            priority=Priority.from_string(data["priority"]),
-            status=Status.from_string(data["status"])
+            expense_id=data["id"],
+            amount=data["amount"],
+            category=data["category"],
+            date=data["date"],
+            description=data.get("description", "")
         )
     
     def __str__(self) -> str:
-        priority_icon = {"Low": "🟢", "Medium": "🟡", "High": "🔴"}
-        status_icon = {"To Do": "⭕", "In Progress": "🔄", "Done": "✅"}
-        return (f"[{self._id}] {self._title}\n"
-                f" Описание: {self._description}\n"
-                f" Приоритет: {priority_icon.get(self._priority.value, '')} {self._priority.value}\n"
-                f" Статус: {status_icon.get(self._status.value, '')} {self._status.value}")
+        return (f"[{self._id}] {self._date} | {self._category}: "
+                f"{self._amount:,.2f} ₽\n {self._description}")
 
 
-class UndoStack:
-    """Стек для отмены последних действий"""
-    def __init__(self, max_size: int = 50):
-        self._stack: List[Dict[str, Any]] = []
-        self._max_size = max_size
+class EssentialExpense(Expense):
+    """Подкласс для обязательных расходов (наследование)"""
+    def __init__(self, expense_id: int, amount: float, category: str, date: str, 
+                 description: str = "", is_essential: bool = True):
+        super().__init__(expense_id, amount, category, date, description)
+        self._is_essential = is_essential
     
-    def push(self, action_type: str, data: Any):
-        """Добавить действие в стек"""
-        self._stack.append({
-            "type": action_type,
-            "data": deepcopy(data), # Глубокое копирование для сохранения состояния
-            "timestamp": len(self._stack)
-        })
-        if len(self._stack) > self._max_size:
-            self._stack.pop(0)
+    @property
+    def is_essential(self) -> bool:
+        return self._is_essential
     
-    def pop(self) -> Optional[Dict[str, Any]]:
-        """Извлечь последнее действие"""
-        if self._stack:
-            return self._stack.pop()
-        return None
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data["type"] = "essential"
+        data["is_essential"] = self._is_essential
+        return data
     
-    def peek(self) -> Optional[Dict[str, Any]]:
-        """Посмотреть последнее действие без извлечения"""
-        if self._stack:
-            return self._stack[-1]
-        return None
-    
-    def is_empty(self) -> bool:
-        return len(self._stack) == 0
-    
-    def clear(self):
-        self._stack.clear()
-    
-    def size(self) -> int:
-        return len(self._stack)
+    def __str__(self) -> str:
+        essential_mark = " (Обязательный)" if self._is_essential else ""
+        return super().__str__() + essential_mark
 
 
-class TaskManager:
-    """Управление задачами с использованием очереди по приоритету"""
+class LeisureExpense(Expense):
+    """Подкласс для расходов на досуг (наследование)"""
+    def __init__(self, expense_id: int, amount: float, category: str, date: str,
+                 description: str = "", fun_level: int = 5):
+        super().__init__(expense_id, amount, category, date, description)
+        self._fun_level = max(1, min(10, fun_level)) # Уровень удовольствия 1-10
+    
+    @property
+    def fun_level(self) -> int:
+        return self._fun_level
+    
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data["type"] = "leisure"
+        data["fun_level"] = self._fun_level
+        return data
+    
+    def __str__(self) -> str:
+        stars = "★" * (self._fun_level // 2) + "☆" * (5 - self._fun_level // 2)
+        return super().__str__() + f"\n Уровень удовольствия: {stars}"
+
+
+# ==================== Менеджер расходов ====================
+
+class ExpenseManager:
+    """Управление расходами"""
     def __init__(self):
-        self._tasks: Dict[int, Task] = {}
+        self._expenses: Dict[int, Expense] = {}
         self._next_id: int = 1
-        self._priority_queue: deque = deque() # Очередь задач по приоритету
-        self._undo_stack = UndoStack()
     
-    def _save_state_for_undo(self, action_type: str, task_id: int = None, old_state: Dict = None):
-        """Сохранить состояние для отмены действия"""
-        if action_type == "add" and task_id:
-            # При добавлении сохраняем ID добавленной задачи
-            self._undo_stack.push("add", {"id": task_id})
-        elif action_type == "delete" and task_id:
-            # При удалении сохраняем полные данные задачи
-            task = self.get_task(task_id)
-            if task:
-                self._undo_stack.push("delete", task.to_dict())
-        elif action_type == "update" and old_state:
-            # При обновлении сохраняем старое состояние
-            self._undo_stack.push("update", old_state)
-    
-    def add_task(self, title: str, description: str, priority: Priority, status: Status) -> Task:
-        """Добавить новую задачу"""
-        # Валидация входных данных
-        if not title or not title.strip():
-            raise ValueError("Название задачи не может быть пустым")
-        
-        task = Task(self._next_id, title, description, priority, status)
-        self._tasks[task.id] = task
-        self._add_to_priority_queue(task)
-        self._next_id += 1
-        
-        # Сохраняем состояние для отмены
-        self._save_state_for_undo("add", task.id)
-        return task
-    
-    def _add_to_priority_queue(self, task: Task):
-        """Добавить задачу в очередь по приоритету"""
-        priority_order = {"High": 0, "Medium": 1, "Low": 2}
-        self._priority_queue.append((priority_order[task.priority.value], task.id))
-        # Сортируем очередь по приоритету
-        self._priority_queue = deque(sorted(self._priority_queue, key=lambda x: x[0]))
-    
-    def get_task(self, task_id: int) -> Optional[Task]:
-        """Получить задачу по ID"""
-        return self._tasks.get(task_id)
-    
-    def update_task(self, task_id: int, title: str = None, description: str = None,
-                   priority: Priority = None, status: Status = None) -> bool:
-        """Обновить задачу"""
-        task = self.get_task(task_id)
-        if not task:
-            return False
-        
-        # Сохраняем старое состояние для отмены
-        old_state = {
-            "id": task_id,
-            "title": task.title,
-            "description": task.description,
-            "priority": task.priority.value,
-            "status": task.status.value
-        }
-        
-        # Обновляем поля с валидацией
+    def add_expense(self, amount: float, category: str, date: str, 
+                    description: str = "", expense_type: str = "basic",
+                    **kwargs) -> Optional[Expense]:
+        """Добавить расход"""
         try:
-            if title is not None:
-                task.title = title
-            if description is not None:
-                task.description = description
-            if priority is not None:
-                task.priority = priority
-            if status is not None:
-                task.status = status
+            # Валидация даты
+            datetime.strptime(date, "%Y-%m-%d")
+            
+            # Создание расхода в зависимости от типа
+            if expense_type == "essential":
+                is_essential = kwargs.get("is_essential", True)
+                expense = EssentialExpense(self._next_id, amount, category, date, 
+                                          description, is_essential)
+            elif expense_type == "leisure":
+                fun_level = kwargs.get("fun_level", 5)
+                expense = LeisureExpense(self._next_id, amount, category, date,
+                                        description, fun_level)
+            else:
+                expense = Expense(self._next_id, amount, category, date, description)
+            
+            self._expenses[expense.id] = expense
+            self._next_id += 1
+            return expense
         except ValueError as e:
-            print(f"Ошибка валидации: {e}")
-            return False
-        
-        self._save_state_for_undo("update", old_state=old_state)
-        
-        # Обновляем очередь приоритетов если изменился приоритет
-        if priority is not None:
-            self._update_priority_queue(task)
-        
-        return True
+            print(f"❌ Ошибка: {e}")
+            return None
     
-    def _update_priority_queue(self, task: Task):
-        """Обновить позицию задачи в очереди приоритетов"""
-        # Удаляем старую запись
-        self._priority_queue = deque([item for item in self._priority_queue if item[1] != task.id])
-        # Добавляем новую
-        self._add_to_priority_queue(task)
+    def get_expense(self, expense_id: int) -> Optional[Expense]:
+        """Получить расход по ID"""
+        return self._expenses.get(expense_id)
     
-    def delete_task(self, task_id: int) -> bool:
-        """Удалить задачу"""
-        task = self.get_task(task_id)
-        if not task:
-            return False
-        
-        # Сохраняем задачу для отмены
-        self._save_state_for_undo("delete", task_id)
-        
-        # Удаляем из очереди
-        self._priority_queue = deque([item for item in self._priority_queue if item[1] != task_id])
-        
-        # Удаляем задачу
-        del self._tasks[task_id]
-        return True
-    
-    def undo_last_action(self) -> bool:
-        """Отменить последнее действие"""
-        action = self._undo_stack.pop()
-        if not action:
-            return False
-        
-        action_type = action["type"]
-        data = action["data"]
-        
-        try:
-            if action_type == "add":
-                # Удаляем добавленную задачу
-                return self.delete_task(data["id"])
-            elif action_type == "delete":
-                # Восстанавливаем удаленную задачу
-                task_data = data
-                # Проверяем, не существует ли уже задача с таким ID
-                if task_data["id"] in self._tasks:
-                    # Если существует, создаем с новым ID
-                    task_data["id"] = self._next_id
-                    self._next_id += 1
-                
-                task = Task.from_dict(task_data)
-                self._tasks[task.id] = task
-                self._add_to_priority_queue(task)
-                if task.id >= self._next_id:
-                    self._next_id = task.id + 1
-                return True
-            elif action_type == "update":
-                # Восстанавливаем старое состояние
-                task = self.get_task(data["id"])
-                if task:
-                    task.title = data["title"]
-                    task.description = data["description"]
-                    task.priority = Priority.from_string(data["priority"])
-                    task.status = Status.from_string(data["status"])
-                    self._update_priority_queue(task)
-                    return True
-        except Exception as e:
-            print(f"Ошибка при отмене действия: {e}")
-            return False
-        
+    def delete_expense(self, expense_id: int) -> bool:
+        """Удалить расход"""
+        if expense_id in self._expenses:
+            del self._expenses[expense_id]
+            return True
         return False
     
-    def get_all_tasks(self) -> List[Task]:
-        """Получить все задачи"""
-        return list(self._tasks.values())
+    def get_all_expenses(self) -> List[Expense]:
+        """Получить все расходы"""
+        return list(self._expenses.values())
     
-    def filter_by_status(self, status: Status) -> List[Task]:
-        """Фильтрация по статусу"""
-        if not isinstance(status, Status):
-            raise ValueError("Некорректный статус")
-        return [task for task in self._tasks.values() if task.status == status]
+    def filter_by_category(self, category: str) -> List[Expense]:
+        """Фильтрация по категории"""
+        return [e for e in self._expenses.values() if e.category == category]
     
-    def filter_by_priority(self, priority: Priority) -> List[Task]:
-        """Фильтрация по приоритету"""
-        if not isinstance(priority, Priority):
-            raise ValueError("Некорректный приоритет")
-        return [task for task in self._tasks.values() if task.priority == priority]
+    def filter_by_period(self, start_date: str, end_date: str) -> List[Expense]:
+        """Фильтрация по периоду"""
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+            filtered = []
+            for expense in self._expenses.values():
+                expense_date = datetime.strptime(expense.date, "%Y-%m-%d")
+                if start <= expense_date <= end:
+                    filtered.append(expense)
+            return filtered
+        except ValueError:
+            print("❌ Ошибка: Неверный формат даты")
+            return []
     
-    def get_tasks_by_priority_order(self) -> List[Task]:
-        """Получить задачи в порядке приоритета (из очереди)"""
-        tasks_by_priority = []
-        for _, task_id in self._priority_queue:
-            task = self.get_task(task_id)
-            if task:
-                tasks_by_priority.append(task)
-        return tasks_by_priority
+    def get_total_by_period(self, start_date: str, end_date: str) -> float:
+        """Подсчёт суммы расходов за период"""
+        expenses = self.filter_by_period(start_date, end_date)
+        return sum(e.amount for e in expenses)
     
-    def save_to_file(self, filename: str = "tasks.json"):
-        """Сохранить задачи в JSON файл"""
+    def get_expenses_by_category(self, start_date: str = None, end_date: str = None) -> Dict[str, float]:
+        """Получить расходы по категориям за период"""
+        if start_date and end_date:
+            expenses = self.filter_by_period(start_date, end_date)
+        else:
+            expenses = self.get_all_expenses()
+        
+        category_totals = defaultdict(float)
+        for expense in expenses:
+            category_totals[expense.category] += expense.amount
+        return dict(category_totals)
+    
+    def get_monthly_summary(self, year: int, month: int) -> Dict[str, float]:
+        """Получить сводку за месяц"""
+        start_date = f"{year}-{month:02d}-01"
+        # Определяем последний день месяца
+        if month == 12:
+            end_date = f"{year+1}-01-01"
+        else:
+            end_date = f"{year}-{month+1:02d}-01"
+        # Вычитаем один день
+        end = datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=1)
+        end_date = end.strftime("%Y-%m-%d")
+        
+        return self.get_expenses_by_category(start_date, end_date)
+    
+    def save_to_file(self, filename: str = "expenses.json"):
+        """Сохранить данные в JSON"""
         try:
             data = {
                 "next_id": self._next_id,
-                "tasks": [task.to_dict() for task in self._tasks.values()]
+                "expenses": []
             }
+            for expense in self._expenses.values():
+                data["expenses"].append(expense.to_dict())
+            
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"Ошибка сохранения: {e}")
+            print(f"❌ Ошибка сохранения: {e}")
             return False
     
-    def load_from_file(self, filename: str = "tasks.json") -> bool:
-        """Загрузить задачи из JSON файла"""
+    def load_from_file(self, filename: str = "expenses.json") -> bool:
+        """Загрузить данные из JSON"""
         if not os.path.exists(filename):
             return False
         
@@ -375,220 +282,314 @@ class TaskManager:
             with open(filename, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Очищаем текущие данные
-            self._tasks.clear()
-            self._priority_queue.clear()
-            self._undo_stack.clear()
-            
+            self._expenses.clear()
             self._next_id = data.get("next_id", 1)
-            for task_data in data.get("tasks", []):
-                task = Task.from_dict(task_data)
-                self._tasks[task.id] = task
-                self._add_to_priority_queue(task)
+            
+            for expense_data in data.get("expenses", []):
+                expense_type = expense_data.get("type", "basic")
+                
+                if expense_type == "essential":
+                    expense = EssentialExpense(
+                        expense_id=expense_data["id"],
+                        amount=expense_data["amount"],
+                        category=expense_data["category"],
+                        date=expense_data["date"],
+                        description=expense_data.get("description", ""),
+                        is_essential=expense_data.get("is_essential", True)
+                    )
+                elif expense_type == "leisure":
+                    expense = LeisureExpense(
+                        expense_id=expense_data["id"],
+                        amount=expense_data["amount"],
+                        category=expense_data["category"],
+                        date=expense_data["date"],
+                        description=expense_data.get("description", ""),
+                        fun_level=expense_data.get("fun_level", 5)
+                    )
+                else:
+                    expense = Expense.from_dict(expense_data)
+                
+                self._expenses[expense.id] = expense
             return True
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"Ошибка загрузки файла: {e}")
+        except Exception as e:
+            print(f"❌ Ошибка загрузки: {e}")
             return False
 
 
-# ==================== Представление (View) ====================
+# ==================== Построитель графиков ====================
+
+class ChartBuilder:
+    """Класс для построения графиков"""
+    
+    @staticmethod
+    def plot_expenses_by_category(expenses_by_category: Dict[str, float], 
+                                  title: str = "Расходы по категориям"):
+        """Построить круговую диаграмму расходов по категориям"""
+        if not expenses_by_category:
+            print("❌ Нет данных для построения графика")
+            return
+        
+        # Подготовка данных
+        categories = list(expenses_by_category.keys())
+        amounts = list(expenses_by_category.values())
+        
+        # Создание графика
+        plt.figure(figsize=(12, 6))
+        
+        # Круговая диаграмма
+        plt.subplot(1, 2, 1)
+        colors = plt.cm.Set3(np.linspace(0, 1, len(categories)))
+        wedges, texts, autotexts = plt.pie(amounts, labels=categories, autopct='%1.1f%%',
+                                            colors=colors, startangle=90)
+        plt.title(title, fontsize=14, fontweight='bold')
+        
+        # Столбчатая диаграмма
+        plt.subplot(1, 2, 2)
+        bars = plt.bar(categories, amounts, color=colors)
+        plt.xlabel('Категории', fontsize=12)
+        plt.ylabel('Сумма (₽)', fontsize=12)
+        plt.title('Расходы по категориям (сравнение)', fontsize=14, fontweight='bold')
+        plt.xticks(rotation=45, ha='right')
+        
+        # Добавление значений на столбцы
+        for bar, amount in zip(bars, amounts):
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{amount:,.0f}₽', ha='center', va='bottom')
+        
+        plt.tight_layout()
+        plt.show()
+    
+    @staticmethod
+    def plot_monthly_trend(expenses: List[Expense], year: int):
+        """Построить график тренда расходов по месяцам"""
+        monthly_totals = defaultdict(float)
+        
+        for expense in expenses:
+            expense_date = datetime.strptime(expense.date, "%Y-%m-%d")
+            if expense_date.year == year:
+                month_key = expense_date.strftime("%B")
+                monthly_totals[month_key] += expense.amount
+        
+        if not monthly_totals:
+            print(f"❌ Нет данных за {year} год")
+            return
+        
+        # Сортировка по месяцам
+        months_order = ['January', 'February', 'March', 'April', 'May', 'June',
+                       'July', 'August', 'September', 'October', 'November', 'December']
+        
+        months_ru = {
+            'January': 'Январь', 'February': 'Февраль', 'March': 'Март',
+            'April': 'Апрель', 'May': 'Май', 'June': 'Июнь',
+            'July': 'Июль', 'August': 'Август', 'September': 'Сентябрь',
+            'October': 'Октябрь', 'November': 'Ноябрь', 'December': 'Декабрь'
+        }
+        
+        months = [m for m in months_order if m in monthly_totals]
+        totals = [monthly_totals[m] for m in months]
+        months_ru_labels = [months_ru[m] for m in months]
+        
+        plt.figure(figsize=(12, 6))
+        plt.plot(months_ru_labels, totals, marker='o', linewidth=2, markersize=8)
+        plt.xlabel('Месяц', fontsize=12)
+        plt.ylabel('Сумма расходов (₽)', fontsize=12)
+        plt.title(f'Тренд расходов за {year} год', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.xticks(rotation=45)
+        
+        # Добавление значений
+        for i, (month, total) in enumerate(zip(months_ru_labels, totals)):
+            plt.text(i, total, f'{total:,.0f}₽', ha='center', va='bottom')
+        
+        plt.tight_layout()
+        plt.show()
+
+
+# ==================== Консольное представление ====================
 
 class ConsoleView:
-    """Консольное представление для взаимодействия с пользователем"""
+    """Консольный интерфейс"""
+    
+    @staticmethod
+    def clear_screen():
+        """Очистка экрана"""
+        os.system('cls' if os.name == 'nt' else 'clear')
     
     @staticmethod
     def display_menu():
         """Отобразить главное меню"""
-        print("\n" + "="*50)
-        print(" МЕНЕДЖЕР ЗАДАЧ")
-        print("="*50)
-        print("1. 📋 Показать все задачи")
-        print("2. ➕ Добавить задачу")
-        print("3. ✏️ Редактировать задачу")
-        print("4. ❌ Удалить задачу")
-        print("5. 🔍 Фильтрация задач")
-        print("6. 📊 Показать задачи по приоритету")
-        print("7. ↩️ Отменить последнее действие")
-        print("8. 💾 Сохранить в файл")
-        print("9. 📂 Загрузить из файла")
+        print("\n" + "="*60)
+        print(" 📊 МЕНЕДЖЕР РАСХОДОВ 📊")
+        print("="*60)
+        print("1. 💰 Добавить расход")
+        print("2. 📋 Просмотреть все расходы")
+        print("3. 🗑️ Удалить расход")
+        print("4. 🔍 Фильтрация расходов")
+        print("5. 📈 Подсчёт суммы за период")
+        print("6. 📊 Построить график расходов по категориям")
+        print("7. 📉 Построить график тренда по месяцам")
+        print("8. 💾 Сохранить данные")
+        print("9. 📂 Загрузить данные")
         print("0. 🚪 Выход")
-        print("-"*50)
+        print("-"*60)
     
     @staticmethod
-    def display_tasks(tasks: List[Task], title: str = "Задачи"):
-        """Отобразить список задач"""
-        if not tasks:
-            print(f"\n{title} не найдены.")
+    def display_expenses(expenses: List[Expense], title: str = "Расходы"):
+        """Отобразить список расходов"""
+        if not expenses:
+            print(f"\n❌ {title} не найдены")
             return
         
-        print(f"\n{title}:")
+        print(f"\n📋 {title}:")
         print("-" * 50)
-        for i, task in enumerate(tasks, 1):
-            print(task)
-            if i < len(tasks):
-                print("-" * 30)
+        total = 0
+        for i, expense in enumerate(expenses, 1):
+            print(f"{i}. {expense}")
+            total += expense.amount
+            if i < len(expenses):
+                print()
+        print("-" * 50)
+        print(f"💰 ИТОГО: {total:,.2f} ₽")
     
     @staticmethod
-    def get_task_input() -> Tuple[str, str, Priority, Status]:
-        """Получить данные новой задачи от пользователя"""
+    def get_expense_input() -> tuple:
+        """Получить данные о расходе"""
+        # Ввод суммы
         while True:
-            title = input("Введите название задачи: ").strip()
-            if title:
-                break
-            print("❌ Ошибка: Название не может быть пустым!")
-        
-        description = input("Введите описание задачи: ").strip()
-        
-        print("\nДоступные приоритеты:")
-        for p in Priority.get_all_values():
-            print(f" - {p}")
-        
-        while True:
-            priority_input = input("Выберите приоритет (Low/Medium/High): ").strip()
             try:
-                priority = Priority.from_string(priority_input)
+                amount = float(input("💰 Сумма расхода (₽): "))
+                if amount <= 0:
+                    print("❌ Сумма должна быть положительной!")
+                    continue
                 break
             except ValueError:
-                print("❌ Ошибка: Некорректный приоритет! Используйте Low, Medium или High")
+                print("❌ Введите корректное число!")
         
-        print("\nДоступные статусы:")
-        for s in Status.get_all_values():
-            print(f" - {s}")
+        # Выбор категории
+        print("\n📁 Доступные категории:")
+        categories = Category.get_all()
+        for i, cat in enumerate(categories, 1):
+            print(f" {i}. {cat}")
         
         while True:
-            status_input = input("Выберите статус (To Do/In Progress/Done): ").strip()
             try:
-                status = Status.from_string(status_input)
+                cat_choice = int(input("Выберите категорию (1-8): "))
+                if 1 <= cat_choice <= len(categories):
+                    category = categories[cat_choice - 1]
+                    break
+                print("❌ Неверный номер категории!")
+            except ValueError:
+                print("❌ Введите число!")
+        
+        # Ввод даты
+        while True:
+            date_str = input("📅 Дата (ГГГГ-ММ-ДД): ")
+            try:
+                datetime.strptime(date_str, "%Y-%m-%d")
                 break
             except ValueError:
-                print("❌ Ошибка: Некорректный статус! Используйте To Do, In Progress или Done")
+                print("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
         
-        return title, description, priority, status
+        # Ввод описания
+        description = input("📝 Описание (необязательно): ").strip()
+        
+        # Выбор типа расхода
+        print("\n📌 Тип расхода:")
+        print(" 1. Обычный")
+        print(" 2. Обязательный")
+        print(" 3. На досуг")
+        
+        expense_type = "basic"
+        extra_params = {}
+        
+        type_choice = input("Выберите тип (1-3): ").strip()
+        if type_choice == "2":
+            expense_type = "essential"
+            is_essential = input("Это обязательный расход? (y/n): ").lower() == 'y'
+            extra_params["is_essential"] = is_essential
+        elif type_choice == "3":
+            expense_type = "leisure"
+            try:
+                fun_level = int(input("Уровень удовольствия (1-10): "))
+                extra_params["fun_level"] = max(1, min(10, fun_level))
+            except ValueError:
+                extra_params["fun_level"] = 5
+        
+        return amount, category, date_str, description, expense_type, extra_params
     
     @staticmethod
-    def get_task_id(prompt: str = "Введите ID задачи") -> Optional[int]:
-        """Получить ID задачи от пользователя"""
-        try:
-            task_id = int(input(f"{prompt}: ").strip())
-            if task_id <= 0:
-                print("❌ Ошибка: ID должен быть положительным числом!")
-                return None
-            return task_id
-        except ValueError:
-            print("❌ Ошибка: Введите корректное число!")
-            return None
-    
-    @staticmethod
-    def get_filter_criteria() -> Tuple[Optional[str], Optional[any]]:
-        """Получить критерии фильтрации"""
-        print("\nФильтровать по:")
-        print("1. Статусу")
-        print("2. Приоритету")
+    def get_period_input() -> tuple:
+        """Получить период для фильтрации"""
+        print("\n📅 Введите период:")
+        while True:
+            start_date = input("Начальная дата (ГГГГ-ММ-ДД): ")
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+                break
+            except ValueError:
+                print("❌ Неверный формат!")
         
-        choice = input("Выберите опцию: ").strip()
+        while True:
+            end_date = input("Конечная дата (ГГГГ-ММ-ДД): ")
+            try:
+                datetime.strptime(end_date, "%Y-%m-%d")
+                if datetime.strptime(end_date, "%Y-%m-%d") >= datetime.strptime(start_date, "%Y-%m-%d"):
+                    break
+                print("❌ Конечная дата должна быть позже начальной!")
+            except ValueError:
+                print("❌ Неверный формат!")
         
-        if choice == "1":
-            print("\nДоступные статусы:")
-            for s in Status.get_all_values():
-                print(f" - {s}")
-            
-            while True:
-                status_input = input("Выберите статус: ").strip()
-                try:
-                    status = Status.from_string(status_input)
-                    return "status", status
-                except ValueError:
-                    print("❌ Ошибка: Некорректный статус!")
-                    
-        elif choice == "2":
-            print("\nДоступные приоритеты:")
-            for p in Priority.get_all_values():
-                print(f" - {p}")
-            
-            while True:
-                priority_input = input("Выберите приоритет: ").strip()
-                try:
-                    priority = Priority.from_string(priority_input)
-                    return "priority", priority
-                except ValueError:
-                    print("❌ Ошибка: Некорректный приоритет!")
-        else:
-            print("❌ Неверный выбор!")
-        
-        return None, None
+        return start_date, end_date
     
     @staticmethod
     def display_message(message: str, is_error: bool = False):
         """Отобразить сообщение"""
         prefix = "❌" if is_error else "✅"
         print(f"{prefix} {message}")
-    
-    @staticmethod
-    def get_edit_input(task: Task) -> Tuple[str, str, str, str]:
-        """Получить данные для редактирования задачи"""
-        print(f"\nРедактирование задачи #{task.id}")
-        print(f"Текущее название: {task.title}")
-        new_title = input("Новое название (Enter для сохранения): ").strip()
-        
-        print(f"Текущее описание: {task.description}")
-        new_description = input("Новое описание (Enter для сохранения): ").strip()
-        
-        print(f"Текущий приоритет: {task.priority.value}")
-        print("Доступные приоритеты: Low, Medium, High")
-        new_priority_input = input("Новый приоритет (Enter для сохранения): ").strip()
-        
-        print(f"Текущий статус: {task.status.value}")
-        print("Доступные статусы: To Do, In Progress, Done")
-        new_status_input = input("Новый статус (Enter для сохранения): ").strip()
-        
-        return new_title, new_description, new_priority_input, new_status_input
-    
-    @staticmethod
-    def show_welcome():
-        """Показать приветственное сообщение"""
-        print("\n" + "="*50)
-        print(" Добро пожаловать в Task Manager!")
-        print(" Управляйте своими задачами легко и удобно")
-        print("="*50)
 
 
-# ==================== Контроллер (Controller) ====================
+# ==================== Контроллер ====================
 
-class MenuController:
-    """Контроллер для обработки команд пользователя"""
+class ExpenseController:
+    """Контроллер приложения"""
     
-    def __init__(self, task_manager: TaskManager, view: ConsoleView):
-        self.task_manager = task_manager
-        self.view = view
+    def __init__(self):
+        self.manager = ExpenseManager()
+        self.view = ConsoleView()
         self.running = True
     
     def run(self):
-        """Запустить главный цикл приложения"""
-        self.view.show_welcome()
+        """Запуск приложения"""
+        self.view.clear_screen()
+        print("\n" + "="*60)
+        print(" Добро пожаловать в Expense Chart!")
+        print(" Отслеживайте и анализируйте свои расходы")
+        print("="*60)
         
-        # Автоматическая загрузка при старте
-        if self.task_manager.load_from_file():
+        # Автоматическая загрузка
+        if self.manager.load_from_file():
             self.view.display_message("Данные загружены из файла")
         else:
-            self.view.display_message("Файл с данными не найден, создан новый список задач")
+            self.view.display_message("Новый файл данных будет создан при сохранении")
         
         while self.running:
             self.view.display_menu()
-            choice = input("\nВыберите действие: ").strip()
+            choice = input("\n🔧 Выберите действие: ").strip()
             self.handle_choice(choice)
     
     def handle_choice(self, choice: str):
-        """Обработать выбор пользователя"""
+        """Обработка выбора пользователя"""
         actions = {
-            "1": self.show_all_tasks,
-            "2": self.add_task,
-            "3": self.edit_task,
-            "4": self.delete_task,
-            "5": self.filter_tasks,
-            "6": self.show_by_priority,
-            "7": self.undo_action,
-            "8": self.save_tasks,
-            "9": self.load_tasks,
+            "1": self.add_expense,
+            "2": self.view_all_expenses,
+            "3": self.delete_expense,
+            "4": self.filter_expenses,
+            "5": self.show_total_by_period,
+            "6": self.show_category_chart,
+            "7": self.show_monthly_trend,
+            "8": self.save_data,
+            "9": self.load_data,
             "0": self.exit_app
         }
         
@@ -596,233 +597,148 @@ class MenuController:
         if action:
             action()
         else:
-            self.view.display_message("Неверный выбор! Попробуйте снова.", is_error=True)
+            self.view.display_message("Неверный выбор!", is_error=True)
     
-    def show_all_tasks(self):
-        """Показать все задачи"""
-        tasks = self.task_manager.get_all_tasks()
-        if not tasks:
-            self.view.display_message("Нет задач для отображения")
+    def add_expense(self):
+        """Добавление расхода"""
+        amount, category, date_str, description, expense_type, extra_params = self.view.get_expense_input()
+        
+        expense = self.manager.add_expense(amount, category, date_str, 
+                                           description, expense_type, **extra_params)
+        if expense:
+            self.view.display_message(f"Расход добавлен с ID {expense.id}")
+    
+    def view_all_expenses(self):
+        """Просмотр всех расходов"""
+        expenses = self.manager.get_all_expenses()
+        if expenses:
+            # Сортировка по дате
+            expenses.sort(key=lambda x: x.date, reverse=True)
+            self.view.display_expenses(expenses, "Все расходы")
         else:
-            self.view.display_tasks(tasks, "Все задачи")
+            self.view.display_message("Нет добавленных расходов", is_error=True)
     
-    def add_task(self):
-        """Добавить новую задачу"""
+    def delete_expense(self):
+        """Удаление расхода"""
         try:
-            title, description, priority, status = self.view.get_task_input()
-            task = self.task_manager.add_task(title, description, priority, status)
-            self.view.display_message(f"Задача '{task.title}' успешно добавлена с ID {task.id}")
-        except ValueError as e:
-            self.view.display_message(str(e), is_error=True)
-    
-    def edit_task(self):
-        """Редактировать задачу"""
-        task_id = self.view.get_task_id("Введите ID задачи для редактирования")
-        if task_id is None:
-            return
-        
-        task = self.task_manager.get_task(task_id)
-        if not task:
-            self.view.display_message(f"Задача с ID {task_id} не найдена", is_error=True)
-            return
-        
-        self.view.display_tasks([task], "Редактируемая задача")
-        
-        new_title, new_description, new_priority_input, new_status_input = self.view.get_edit_input(task)
-        
-        # Подготавливаем обновления
-        title = new_title if new_title else None
-        description = new_description if new_description else None
-        
-        priority = None
-        if new_priority_input:
-            try:
-                priority = Priority.from_string(new_priority_input)
-            except ValueError:
-                self.view.display_message("Некорректный приоритет, оставляем текущий", is_error=True)
-        
-        status = None
-        if new_status_input:
-            try:
-                status = Status.from_string(new_status_input)
-            except ValueError:
-                self.view.display_message("Некорректный статус, оставляем текущий", is_error=True)
-        
-        if self.task_manager.update_task(task_id, title, description, priority, status):
-            self.view.display_message("Задача успешно обновлена")
-        else:
-            self.view.display_message("Ошибка при обновлении задачи", is_error=True)
-    
-    def delete_task(self):
-        """Удалить задачу"""
-        task_id = self.view.get_task_id("Введите ID задачи для удаления")
-        if task_id is None:
-            return
-        
-        task = self.task_manager.get_task(task_id)
-        if not task:
-            self.view.display_message(f"Задача с ID {task_id} не найдена", is_error=True)
-            return
-        
-        self.view.display_tasks([task], "Удаляемая задача")
-        confirm = input("Вы уверены, что хотите удалить эту задачу? (y/n): ").strip().lower()
-        
-        if confirm == 'y' or confirm == 'yes':
-            if self.task_manager.delete_task(task_id):
-                self.view.display_message("Задача успешно удалена")
+            expense_id = int(input("Введите ID расхода для удаления: "))
+            if self.manager.delete_expense(expense_id):
+                self.view.display_message("Расход удалён")
             else:
-                self.view.display_message("Ошибка при удалении задачи", is_error=True)
-        else:
-            self.view.display_message("Удаление отменено")
+                self.view.display_message("Расход не найден", is_error=True)
+        except ValueError:
+            self.view.display_message("Неверный ID!", is_error=True)
     
-    def filter_tasks(self):
-        """Фильтрация задач"""
-        filter_type, value = self.view.get_filter_criteria()
+    def filter_expenses(self):
+        """Фильтрация расходов"""
+        print("\n🔍 Фильтрация:")
+        print("1. По категории")
+        print("2. По периоду")
         
-        if filter_type == "status":
-            tasks = self.task_manager.filter_by_status(value)
-            self.view.display_tasks(tasks, f"Задачи со статусом '{value.value}'")
-        elif filter_type == "priority":
-            tasks = self.task_manager.filter_by_priority(value)
-            self.view.display_tasks(tasks, f"Задачи с приоритетом '{value.value}'")
+        choice = input("Выберите опцию: ").strip()
+        
+        if choice == "1":
+            print("\n📁 Категории:")
+            for cat in Category.get_all():
+                print(f" - {cat}")
+            category = input("Введите категорию: ").strip()
+            
+            if Category.is_valid(category):
+                expenses = self.manager.filter_by_category(category)
+                self.view.display_expenses(expenses, f"Расходы по категории '{category}'")
+            else:
+                self.view.display_message("Неверная категория!", is_error=True)
+        
+        elif choice == "2":
+            start_date, end_date = self.view.get_period_input()
+            expenses = self.manager.filter_by_period(start_date, end_date)
+            self.view.display_expenses(expenses, f"Расходы за период {start_date} - {end_date}")
+        
         else:
-            self.view.display_message("Фильтрация отменена", is_error=True)
+            self.view.display_message("Неверный выбор!", is_error=True)
     
-    def show_by_priority(self):
-        """Показать задачи в порядке приоритета"""
-        tasks = self.task_manager.get_tasks_by_priority_order()
-        if not tasks:
-            self.view.display_message("Нет задач для отображения")
-        else:
-            self.view.display_tasks(tasks, "Задачи по приоритету (High → Medium → Low)")
+    def show_total_by_period(self):
+        """Подсчёт суммы за период"""
+        start_date, end_date = self.view.get_period_input()
+        total = self.manager.get_total_by_period(start_date, end_date)
+        
+        print("\n" + "="*50)
+        print(f"📊 Сумма расходов за период {start_date} - {end_date}")
+        print("="*50)
+        print(f"💰 ИТОГО: {total:,.2f} ₽")
+        
+        # Показать детали по категориям
+        category_totals = self.manager.get_expenses_by_category(start_date, end_date)
+        if category_totals:
+            print("\n📁 По категориям:")
+            for category, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
+                percentage = (amount / total * 100) if total > 0 else 0
+                print(f" {category}: {amount:,.2f} ₽ ({percentage:.1f}%)")
     
-    def undo_action(self):
-        """Отменить последнее действие"""
-        if self.task_manager.undo_last_action():
-            self.view.display_message("Последнее действие успешно отменено")
+    def show_category_chart(self):
+        """Показать график расходов по категориям"""
+        print("\n📊 Построение графика расходов по категориям")
+        use_period = input("Использовать период? (y/n): ").lower() == 'y'
+        
+        if use_period:
+            start_date, end_date = self.view.get_period_input()
+            expenses_by_category = self.manager.get_expenses_by_category(start_date, end_date)
+            title = f"Расходы по категориям ({start_date} - {end_date})"
         else:
-            self.view.display_message("Нет действий для отмены", is_error=True)
+            expenses_by_category = self.manager.get_expenses_by_category()
+            title = "Расходы по категориям (все время)"
+        
+        if expenses_by_category:
+            ChartBuilder.plot_expenses_by_category(expenses_by_category, title)
+        else:
+            self.view.display_message("Нет данных для построения графика", is_error=True)
     
-    def save_tasks(self):
-        """Сохранить задачи в файл"""
-        if self.task_manager.save_to_file():
-            self.view.display_message("Задачи успешно сохранены в файл 'tasks.json'")
-        else:
-            self.view.display_message("Ошибка при сохранении задач", is_error=True)
+    def show_monthly_trend(self):
+        """Показать график тренда по месяцам"""
+        try:
+            year = int(input("Введите год (например, 2024): "))
+            expenses = self.manager.get_all_expenses()
+            ChartBuilder.plot_monthly_trend(expenses, year)
+        except ValueError:
+            self.view.display_message("Неверный год!", is_error=True)
     
-    def load_tasks(self):
-        """Загрузить задачи из файла"""
-        if self.task_manager.load_from_file():
-            self.view.display_message("Задачи успешно загружены из файла 'tasks.json'")
+    def save_data(self):
+        """Сохранение данных"""
+        if self.manager.save_to_file():
+            self.view.display_message("Данные сохранены в 'expenses.json'")
         else:
-            self.view.display_message("Ошибка при загрузке задач или файл не найден", is_error=True)
+            self.view.display_message("Ошибка при сохранении", is_error=True)
+    
+    def load_data(self):
+        """Загрузка данных"""
+        if self.manager.load_from_file():
+            self.view.display_message("Данные загружены из 'expenses.json'")
+        else:
+            self.view.display_message("Ошибка при загрузке или файл не найден", is_error=True)
     
     def exit_app(self):
-        """Выйти из приложения"""
-        save_choice = input("Сохранить изменения перед выходом? (y/n): ").strip().lower()
-        if save_choice == 'y' or save_choice == 'yes':
-            self.save_tasks()
+        """Выход из приложения"""
+        save_choice = input("Сохранить изменения перед выходом? (y/n): ").lower()
+        if save_choice == 'y':
+            self.save_data()
         self.view.display_message("До свидания!")
         self.running = False
 
 
-# ==================== Юнит-тесты ====================
-
-import unittest
-
-class TestTaskManager(unittest.TestCase):
-    def setUp(self):
-        self.manager = TaskManager()
-    
-    def test_add_task(self):
-        task = self.manager.add_task("Test Task", "Description", Priority.HIGH, Status.TODO)
-        self.assertEqual(task.title, "Test Task")
-        self.assertEqual(task.priority, Priority.HIGH)
-        self.assertEqual(len(self.manager.get_all_tasks()), 1)
-    
-    def test_add_task_empty_title(self):
-        with self.assertRaises(ValueError):
-            self.manager.add_task("", "Description", Priority.MEDIUM, Status.TODO)
-    
-    def test_update_task(self):
-        task = self.manager.add_task("Old Title", "Old Desc", Priority.LOW, Status.TODO)
-        self.manager.update_task(task.id, title="New Title", status=Status.IN_PROGRESS)
-        updated = self.manager.get_task(task.id)
-        self.assertEqual(updated.title, "New Title")
-        self.assertEqual(updated.status, Status.IN_PROGRESS)
-    
-    def test_delete_task(self):
-        task = self.manager.add_task("To Delete", "Desc", Priority.MEDIUM, Status.TODO)
-        self.manager.delete_task(task.id)
-        self.assertIsNone(self.manager.get_task(task.id))
-    
-    def test_undo_add(self):
-        task = self.manager.add_task("Undo Test", "Desc", Priority.HIGH, Status.TODO)
-        self.assertEqual(len(self.manager.get_all_tasks()), 1)
-        self.manager.undo_last_action()
-        self.assertEqual(len(self.manager.get_all_tasks()), 0)
-    
-    def test_filter_by_status(self):
-        self.manager.add_task("Task 1", "Desc", Priority.LOW, Status.TODO)
-        self.manager.add_task("Task 2", "Desc", Priority.MEDIUM, Status.DONE)
-        self.manager.add_task("Task 3", "Desc", Priority.HIGH, Status.TODO)
-        
-        todo_tasks = self.manager.filter_by_status(Status.TODO)
-        self.assertEqual(len(todo_tasks), 2)
-    
-    def test_filter_by_priority(self):
-        self.manager.add_task("Task 1", "Desc", Priority.HIGH, Status.TODO)
-        self.manager.add_task("Task 2", "Desc", Priority.LOW, Status.DONE)
-        self.manager.add_task("Task 3", "Desc", Priority.HIGH, Status.TODO)
-        
-        high_tasks = self.manager.filter_by_priority(Priority.HIGH)
-        self.assertEqual(len(high_tasks), 2)
-    
-    def test_priority_order(self):
-        self.manager.add_task("Low", "Desc", Priority.LOW, Status.TODO)
-        self.manager.add_task("High", "Desc", Priority.HIGH, Status.TODO)
-        self.manager.add_task("Medium", "Desc", Priority.MEDIUM, Status.TODO)
-        
-        ordered = self.manager.get_tasks_by_priority_order()
-        priorities = [task.priority.value for task in ordered]
-        self.assertEqual(priorities, ["High", "Medium", "Low"])
-    
-    def test_save_load(self):
-        self.manager.add_task("Save Test", "Desc", Priority.MEDIUM, Status.TODO)
-        self.manager.save_to_file("test_tasks.json")
-        
-        new_manager = TaskManager()
-        new_manager.load_from_file("test_tasks.json")
-        self.assertEqual(len(new_manager.get_all_tasks()), 1)
-        
-        # Cleanup
-        if os.path.exists("test_tasks.json"):
-            os.remove("test_tasks.json")
-
-
 # ==================== Точка входа ====================
 
-def run_tests():
-    """Запустить тесты"""
-    print("\n" + "="*50)
-    print("ЗАПУСК ТЕСТОВ")
-    print("="*50)
-    unittest.main(argv=[''], verbosity=2, exit=False)
-
-
 def main():
-    """Точка входа в приложение"""
-    task_manager = TaskManager()
-    view = ConsoleView()
-    controller = MenuController(task_manager, view)
-    controller.run()
+    """Главная функция"""
+    try:
+        controller = ExpenseController()
+        controller.run()
+    except KeyboardInterrupt:
+        print("\n\n👋 Программа прервана пользователем")
+    except Exception as e:
+        print(f"\n❌ Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
-    import sys
-    
-    # Проверяем аргументы командной строки
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        run_tests()
-    else:
-        main()
+    main()
